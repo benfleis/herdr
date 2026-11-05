@@ -240,26 +240,11 @@ impl ClientShellState {
             .panes
             .iter()
             .map(|pane| PaneHit {
-                rect: Rect::new(
-                    layout.pane_surface.x.saturating_add(pane.rect.x),
-                    layout.pane_surface.y.saturating_add(pane.rect.y),
-                    pane.rect.width,
-                    pane.rect.height,
-                ),
-                inner_rect: Rect::new(
-                    layout.pane_surface.x.saturating_add(pane.inner_rect.x),
-                    layout.pane_surface.y.saturating_add(pane.inner_rect.y),
-                    pane.inner_rect.width,
-                    pane.inner_rect.height,
-                ),
-                scrollbar_rect: pane.scrollbar_rect.map(|rect| {
-                    Rect::new(
-                        layout.pane_surface.x.saturating_add(rect.x),
-                        layout.pane_surface.y.saturating_add(rect.y),
-                        rect.width,
-                        rect.height,
-                    )
-                }),
+                rect: surface_rect_in(layout.pane_surface, pane.rect),
+                inner_rect: surface_rect_in(layout.pane_surface, pane.inner_rect),
+                scrollbar_rect: pane
+                    .scrollbar_rect
+                    .map(|rect| surface_rect_in(layout.pane_surface, rect)),
                 scroll: pane.scroll.map(|metrics| crate::pane::ScrollMetrics {
                     offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
                         .unwrap_or(usize::MAX),
@@ -321,29 +306,26 @@ impl ClientShellState {
             && self.endpoint_error.is_none();
         let resize_mode_panes = (self.mode == ClientShellMode::Resize && self.overlay.is_none())
             .then(|| {
-                // `hits.panes` was built from `surface.panes` above, in the same order.
                 surface
                     .panes
                     .iter()
-                    .zip(&self.hits.panes)
-                    .map(|(pane, hit)| render::ResizeModePane {
-                        rect: hit.rect,
-                        inner_rect: hit.inner_rect,
-                        scrollbar_rect: hit.scrollbar_rect,
+                    .map(|pane| render::ResizeModePane {
+                        rect: surface_rect_in(layout.pane_surface, pane.rect),
+                        inner_rect: surface_rect_in(layout.pane_surface, pane.inner_rect),
+                        scrollbar_rect: pane
+                            .scrollbar_rect
+                            .map(|rect| surface_rect_in(layout.pane_surface, rect)),
                         focused: pane.focused,
                     })
                     .collect::<Vec<_>>()
             });
-        let resize_badge_on_pane = resize_mode_panes.as_deref().is_some_and(|panes| {
-            panes.iter().any(|pane| {
-                pane.focused
-                    && render::resize_badge_area(
-                        pane.rect,
-                        pane.inner_rect,
-                        Rect::new(0, 0, cols, rows),
-                    )
-                    .is_some()
-            })
+        let resize_badge = resize_mode_panes.as_deref().and_then(|panes| {
+            let focused = panes.iter().find(|pane| pane.focused)?;
+            render::resize_badge_area(
+                focused.rect,
+                focused.inner_rect,
+                Rect::new(0, 0, cols, rows),
+            )
         });
         let mode_bar = if mobile_navigate_panel || self.overlay.is_some() {
             None
@@ -357,7 +339,7 @@ impl ClientShellState {
                 snapshot.update_available.is_some(),
                 &self.config.keybinds,
                 &self.config.palette,
-                resize_badge_on_pane,
+                resize_badge.is_some(),
             )
         };
         if mode_bar == Some(layout.tab_bar) {
@@ -443,9 +425,13 @@ impl ClientShellState {
         if let Some(panes) = resize_mode_panes.as_deref() {
             let cursor = frame.cursor.clone();
             let mut composed = frame.to_ratatui_buffer()?;
-            if let Some(badge) =
-                render::render_resize_mode_panes(&mut composed, panes, &self.config.palette)
-            {
+            render::render_resize_mode_panes(
+                &mut composed,
+                panes,
+                resize_badge,
+                &self.config.palette,
+            );
+            if let Some(badge) = resize_badge {
                 occlusion.cover(badge);
             }
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
@@ -761,6 +747,16 @@ impl ClientShellState {
         let graphics = self.compose_graphics(layout, &occlusion);
         Some(crate::client::frame_output::ComposedFrame { frame, graphics })
     }
+}
+
+/// A pane-surface rect in shell coordinates, given where the surface is drawn.
+fn surface_rect_in(origin: Rect, rect: crate::protocol::SurfaceRect) -> Rect {
+    Rect::new(
+        origin.x.saturating_add(rect.x),
+        origin.y.saturating_add(rect.y),
+        rect.width,
+        rect.height,
+    )
 }
 
 fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &PaneHit) -> bool {

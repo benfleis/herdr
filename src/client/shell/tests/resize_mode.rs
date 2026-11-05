@@ -107,14 +107,16 @@ fn resize_mode_highlights_focused_pane_frame_and_badges_it() {
     );
     assert_eq!(buffer[(other.x, other.y)].symbol(), "┌");
     assert_eq!(buffer[(other.x + 1, other.y)].symbol(), "─");
-    // The badge moved onto the pane, so the mode bar shows it only once.
+    // The badge moves onto the pane: RESIZE shows once on screen, and the mode
+    // bar keeps only the hints, one cell in from its left edge.
     assert_eq!(
         frame_rows(&frame).concat().matches("RESIZE").count(),
         1,
         "{:?}",
         frame_rows(&frame)
     );
-    assert!(frame_rows(&frame).concat().contains("h/l width"));
+    let (hints_x, _) = cell_symbol_position(&frame, Rect::new(0, 0, 80, 12), "h/l width");
+    assert_eq!(hints_x, focused.x + 1);
     // Pane content is not restyled.
     let (text_x, text_y) = cell_symbol_position(&frame, focused, "left");
     assert_eq!(buffer[(text_x, text_y)].fg, ratatui::style::Color::Reset);

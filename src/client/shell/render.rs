@@ -109,11 +109,15 @@ pub(super) fn render_mode_bar(
             }
             ClientShellMode::Resize => {
                 // The focused pane carries the badge when it can; keep only the hints here.
-                if !resize_badge_on_pane {
-                    segments.push((RESIZE_BADGE.to_owned(), mode_style));
+                if resize_badge_on_pane {
+                    segments.push((" ".to_owned(), base));
+                } else {
+                    segments.extend([
+                        (RESIZE_BADGE.to_owned(), mode_style),
+                        ("  ".to_owned(), base),
+                    ]);
                 }
                 segments.extend([
-                    ("  ".to_owned(), base),
                     ("h/l".to_owned(), key),
                     (" width  ".to_owned(), base),
                     ("j/k".to_owned(), key),
@@ -240,9 +244,10 @@ pub(super) struct ResizeModePane {
 
 const RESIZE_BADGE: &str = " RESIZE ";
 
-/// Where the RESIZE badge goes on a pane's top edge, if the pane has a top edge
-/// wide enough to carry it. Borderless panes get no badge so terminal text is
-/// never covered; the mode bar keeps the badge for them instead.
+/// Where the RESIZE badge goes on a pane's top edge: centred, and only when the
+/// pane has a top border at least 12 columns wide (the badge plus two border
+/// cells each side). Borderless and narrower panes get no badge, so terminal
+/// text is never covered; the mode bar keeps the badge for them instead.
 pub(super) fn resize_badge_area(rect: Rect, inner_rect: Rect, bounds: Rect) -> Option<Rect> {
     let badge_width = display_width(RESIZE_BADGE);
     let area = rect.intersection(bounds);
@@ -258,36 +263,37 @@ pub(super) fn resize_badge_area(rect: Rect, inner_rect: Rect, bounds: Rect) -> O
     ))
 }
 
-/// Resize mode makes every pane read-only, so mark it where the user is looking:
-/// the focused pane's frame becomes a bold dashed line in the resize color, other
-/// frames fade, and the focused pane carries the RESIZE badge on its top edge.
-/// Returns the badge area.
+/// Resize mode swallows typed keys, so mark it where the user is looking: the
+/// focused pane's frame becomes a bold dashed line in the resize color, other
+/// frames fade, and `badge` (from [`resize_badge_area`]) carries the RESIZE badge.
 pub(super) fn render_resize_mode_panes(
     buffer: &mut Buffer,
     panes: &[ResizeModePane],
+    badge: Option<Rect>,
     palette: &Palette,
-) -> Option<Rect> {
+) {
     let pale = Style::default().fg(palette.surface1);
     let bright = Style::default()
         .fg(palette.mauve)
         .add_modifier(Modifier::BOLD);
-    // Unfocused frames first, so cells shared with the focused frame end bright.
-    for pane in panes.iter().filter(|pane| !pane.focused) {
-        restyle_pane_frame(buffer, pane, pale, false);
+    // Each pass restyles only the frame cells inside its own pane rect.
+    for pane in panes {
+        if pane.focused {
+            restyle_pane_frame(buffer, pane, bright, true);
+        } else {
+            restyle_pane_frame(buffer, pane, pale, false);
+        }
     }
-    let focused = panes.iter().find(|pane| pane.focused)?;
-    restyle_pane_frame(buffer, focused, bright, true);
-
-    let badge = resize_badge_area(focused.rect, focused.inner_rect, buffer.area)?;
-    put_text(
-        buffer,
-        badge.x,
-        badge.y,
-        badge.width,
-        RESIZE_BADGE,
-        mode_badge_style(palette, palette.mauve),
-    );
-    Some(badge)
+    if let Some(badge) = badge {
+        put_text(
+            buffer,
+            badge.x,
+            badge.y,
+            badge.width,
+            RESIZE_BADGE,
+            mode_badge_style(palette, palette.mauve),
+        );
+    }
 }
 
 /// Restyle the box-drawing cells between a pane's outer and inner rects, and
@@ -327,30 +333,28 @@ fn is_box_drawing(symbol: &str) -> bool {
 }
 
 /// Heavy dashed lines with heavy corners and junctions, for a frame that reads
-/// as temporary.
+/// as temporary. Covers the glyphs `line_cell_symbol` in `src/ui/panes.rs`
+/// draws; anything else (e.g. a server of another version) is only recoloured.
 fn heavy_dashed(symbol: &str) -> Option<&'static str> {
     Some(match symbol {
-        "─" | "━" | "═" | "┄" | "┈" | "╌" => "┅",
-        "│" | "┃" | "║" | "┆" | "┊" | "╎" => "┇",
-        "┌" | "╭" | "╔" => "┏",
-        "┐" | "╮" | "╗" => "┓",
-        "└" | "╰" | "╚" => "┗",
-        "┘" | "╯" | "╝" => "┛",
-        "├" | "╠" => "┣",
-        "┤" | "╣" => "┫",
-        "┬" | "╦" => "┳",
-        "┴" | "╩" => "┻",
-        "┼" | "╬" => "╋",
+        "─" => "┅",
+        "│" => "┇",
+        "┌" => "┏",
+        "┐" => "┓",
+        "└" => "┗",
+        "┘" => "┛",
+        "├" => "┣",
+        "┤" => "┫",
+        "┬" => "┳",
+        "┴" => "┻",
+        "┼" => "╋",
         _ => return None,
     })
 }
 
 fn mode_badge_style(palette: &Palette, bg: ratatui::style::Color) -> Style {
     Style::default()
-        .fg(match palette.panel_bg {
-            ratatui::style::Color::Reset => palette.surface_dim,
-            color => color,
-        })
+        .fg(panel_contrast_fg(palette))
         .bg(bg)
         .add_modifier(Modifier::BOLD)
 }
